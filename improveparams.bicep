@@ -1,4 +1,5 @@
 param location string = resourceGroup().location
+
 @allowed([
   'Production'
   'Test'
@@ -25,34 +26,29 @@ param serverFarmsHostingPlanSkuName string = 'F1'
 @minValue(1)
 param skuCapacity int = 1
 
+param resourceNameSuffix string = uniqueString(resourceGroup().id)
+
 param sqlAdministratorLogin string
 @secure()
 param sqlAdministratorLoginPassword string
 
 param managedIdentityName string = 'Website'
 @description('Web site resource name')
-param webSiteName string = 'webSite${uniqueString(resourceGroup().id)}'
-@description('Blob service container name')
-param productSpecsContainerName string = 'productspecs'
-@description('Blob service container name')
-param productManualsName string = 'productmanuals'
+param appServiceName string = 'webSite${resourceNameSuffix}'
 
 @description('Contributor role in Azure portal')
 var contributorRoleDefinitionId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
-var hostingPlanName = 'hostingplan${uniqueString(resourceGroup().id)}'
-var sqlserverName = 'toywebsite${uniqueString(resourceGroup().id)}'
-var storageAccountName = 'toywebsite${uniqueString(resourceGroup().id)}'
+var appServicePlanName = 'hostingplan${resourceNameSuffix}'
+var sqlserverName = 'toywebsite${resourceNameSuffix}'
+var databaseName = 'ToyCompanyWebsite'
+var storageAccountName = 'toywebsite${resourceNameSuffix}'
 
-var appServicePlanMap = {
-  Production: {
-    sku: 'S1'
-    instances: 2 
-  }
-  Test: {
-    sku: 'F1'
-    instances: 1
-  }
-}
+
+@description('Blob service container name')
+var blobContainersNames = [
+  'productspecs'
+  'productmanuals'
+]
 
 var envConfigurationMap = {
   Production: {
@@ -98,7 +94,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2019-06-01' = {
   name: storageAccountName
   location: location
   sku: {
-    name: 'Standard_LRS'
+    name: envConfigurationMap[envType].storageAccount.sku.name
   }
   kind: 'StorageV2'
   properties: {
@@ -107,15 +103,14 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2019-06-01' = {
 
   resource blobServices 'blobServices' existing = {
     name: 'default'
+
+    resource containers 'containers' = [for blobContainerName in blobContainersNames: {
+      name: blobContainerName
+    }] 
   }
 }
 
-resource container1 'Microsoft.Storage/storageAccounts/blobServices/containers@2019-06-01' = {
-  parent: storageAccount::blobServices
-  name: productSpecsContainerName
-}
-
-resource sqlserver 'Microsoft.Sql/servers@2019-06-01-preview' = {
+resource sqlServer 'Microsoft.Sql/servers@2019-06-01-preview' = {
   name: sqlserverName
   location: location
   properties: {
@@ -125,47 +120,37 @@ resource sqlserver 'Microsoft.Sql/servers@2019-06-01-preview' = {
   }
 }
 
-var databaseName = 'ToyCompanyWebsite'
-resource sqlserverName_databaseName 'Microsoft.Sql/servers/databases@2020-08-01-preview' = {
-  name: '${sqlserver.name}/${databaseName}'
+resource sqlDatbase 'Microsoft.Sql/servers/databases@2020-08-01-preview' = {
+  parent: sqlServer
+  name: databaseName
   location: location
-  sku: {
-    name: 'Basic'
-  }
+  sku: envConfigurationMap[envType].sqlDatabase.sku.name
   properties: {
     collation: 'SQL_Latin1_General_CP1_CI_AS'
     maxSizeBytes: 1073741824
   }
 }
 
-resource sqlserverName_AllowAllAzureIPs 'Microsoft.Sql/servers/firewallRules@2014-04-01' = {
-  name: '${sqlserver.name}/AllowAllAzureIPs'
+resource sqlFirewallAllowAllAzureIPs 'Microsoft.Sql/servers/firewallRules@2014-04-01' = {
+  parent: sqlServer
+  name: 'AllowAllAzureIPs'
   properties: {
     endIpAddress: '0.0.0.0'
     startIpAddress: '0.0.0.0'
   }
-  dependsOn: [
-    sqlserver
-  ]
 }
 
-resource productmanuals 'Microsoft.Storage/storageAccounts/blobServices/containers@2019-06-01' = {
-  name: '${storageAccount.name}/default/${productManualsName}'
-}
-resource hostingPlan 'Microsoft.Web/serverfarms@2020-06-01' = {
-  name: hostingPlanName
+resource appServicePlan 'Microsoft.Web/serverfarms@2020-06-01' = {
+  name: appServicePlanName
   location: location
-  sku: {
-    name: serverFarmsHostingPlanSkuName
-    capacity: skuCapacity
-  }
+  sku: envConfigurationMap[envType].appServicePlan.sku
 }
 
-resource webSite 'Microsoft.Web/sites@2020-06-01' = {
-  name: webSiteName
+resource appServiceApp 'Microsoft.Web/sites@2020-06-01' = {
+  name: appServiceName
   location: location
   properties: {
-    serverFarmId: hostingPlan.id
+    serverFarmId: appServicePlan.id
     siteConfig: {
       appSettings: [
         {
@@ -187,17 +172,6 @@ resource webSite 'Microsoft.Web/sites@2020-06-01' = {
   }
 }
 
-// We don't need this anymore. We use a managed identity to access the database instead.
-//resource webSiteConnectionStrings 'Microsoft.Web/sites/config@2020-06-01' = {
-//  name: '${webSite.name}/connectionstrings'
-//  properties: {
-//    DefaultConnection: {
-//      value: 'Data Source=tcp:${sqlserver.properties.fullyQualifiedDomainName},1433;Initial Catalog=${databaseName};User Id=${sqlAdministratorLogin}@${sqlserver.properties.fullyQualifiedDomainName};Password=${sqlAdministratorLoginPassword};'
-//      type: 'SQLAzure'
-//    }
-//  }
-//}
-
 resource msi 'Microsoft.ManagedIdentity/userAssignedIdentities@2018-11-30' = {
   name: managedIdentityName
   location: location
@@ -205,7 +179,6 @@ resource msi 'Microsoft.ManagedIdentity/userAssignedIdentities@2018-11-30' = {
 
 resource roleassignment 'Microsoft.Authorization/roleAssignments@2020-04-01-preview' = {
   name: guid(contributorRoleDefinitionId, resourceGroup().id)
-
   properties: {
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleDefinitionId)
