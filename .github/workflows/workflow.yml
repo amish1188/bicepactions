@@ -34,10 +34,10 @@ jobs:
         template: ./deploy/bicepactionsmain.bicep
         parameters: environmentType=${{ env.ENVIRONMENT }}
         deploymentMode: Validate
-        
+
   deploy:
     runs-on: ubuntu-latest
-    needs: [lint, valdiate]
+    needs: [lint, validate]
     steps:
     - uses: actions/checkout@v2
     - uses: azure/login@v1
